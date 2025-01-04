@@ -29,7 +29,6 @@ def parse_args():
     parser.add_argument('--language', type=str, required=True, choices=LANGUAGES + ['all'], default='en', help="Language to use.")
     parser.add_argument('--gt_type', type=str, required=True, choices=GT_TYPES + ['all'], help="Ground truth type: 'positive' or 'negative'.")
     parser.add_argument('--log_path', type=str, required=True)
-
     args = parser.parse_args()
     return args
 
@@ -101,10 +100,18 @@ def build_model(args):
         grounder = OSAtlas7BVLLMModel()
         grounder.load_model()
         model = SeeClickProAgent(grounder=grounder)
+    elif model_type == "aguvis":
+        from models.aguvis import AguvisModel
+        model = AguvisModel()
+        if args.model_name_or_path:
+            model.load_model(args.model_name_or_path)
+        else:
+            model.load_model()
     else:
         raise ValueError(f"Unsupported model type {model_type}.")
     model.set_generation_config(temperature=0, max_new_tokens=256)
     return model
+
 
 def collect_results_to_eval(results, platform=None, group=None, application=None, language=None, gt_type=None, instruction_style=None, ui_type=None):
     """
