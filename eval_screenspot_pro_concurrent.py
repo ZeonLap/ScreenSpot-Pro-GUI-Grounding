@@ -10,6 +10,8 @@ from PIL import Image
 import logging
 from tqdm import tqdm
 
+import concurrent.futures
+
 
 logging.basicConfig(level=logging.INFO)
 torch.manual_seed(114514)
@@ -411,6 +413,46 @@ def evaluate(results):
 
     return result_report
 
+
+def process_single_task(model, sample, args):
+    """Process a single task and return the result"""
+    filename = sample["img_filename"]
+    img_path = os.path.join(args.screenspot_imgs, filename)
+
+    if sample["gt_type"] == "positive":
+        response = model.ground_only_positive(instruction=sample["prompt_to_evaluate"], image=img_path)
+    elif sample["gt_type"] == "negative":
+        response = model.ground_allow_negative(instruction=sample["prompt_to_evaluate"], image=img_path)
+
+    point = response["point"]
+    img_size = sample["img_size"]
+    point_in_pixel = [point[0] * img_size[0], point[1] * img_size[1]] if point else None
+
+    sample_result = {
+        "img_path": img_path, 
+        "group": sample.get("group"),
+        "platform": sample["platform"],
+        "application": sample["application"],
+        "lang": sample["language"],
+        "instruction_style": sample["instruction_style"],
+        "prompt_to_evaluate": sample["prompt_to_evaluate"], 
+        "gt_type": sample["gt_type"],
+        "ui_type": sample["ui_type"], 
+        "task_filename": sample["task_filename"], 
+        "pred": point_in_pixel, 
+        "raw_response": response["raw_response"]
+    }
+
+    if sample["gt_type"] == "positive":
+        correctness = eval_sample_positive_gt(sample, response)
+        sample_result["bbox"] = sample["bbox"]
+    else:
+        correctness = eval_sample_negative_gt(sample, response)
+
+    sample_result["correctness"] = correctness
+    return sample_result
+
+
 def main(args):
     model = build_model(args)
     print("Load model success")
@@ -456,7 +498,7 @@ def main(args):
                         task_instance["instruction_style"] = inst_style
                         task_instance["language"] = lang
                         if lang == "cn":
-                            if inst_style!= 'instruction' or gt_type != 'positive':
+                            if inst_style != 'instruction' or gt_type != 'positive':
                                 # TODO: Translate the data
                                 raise AttributeError("Only positive samples and 'instruction' style are supported for Chinese instructions.")
                             task_instance["prompt_to_evaluate"] = task_instance["instruction_cn"]
@@ -468,50 +510,24 @@ def main(args):
     print(f"Total tasks: {len(tasks_to_run)}")
 
     results = []
-    for sample in tqdm(tasks_to_run):
-        filename = sample["img_filename"]
-        img_path = os.path.join(args.screenspot_imgs, filename)
-
-        if task_instance["gt_type"] == "positive":
-            response = model.ground_only_positive(instruction=sample["prompt_to_evaluate"], image=img_path)
-        elif task_instance["gt_type"] == "negative":
-            response = model.ground_allow_negative(instruction=sample["prompt_to_evaluate"], image=img_path)
-        # print(response)
-        point = response["point"]
-        img_size = sample["img_size"]
-        point_in_pixel = [point[0] * img_size[0], point[1] * img_size[1]] if point else None
-        
-        sample_result = {
-            "img_path": img_path, 
-            "group": sample["group"] if "group" in sample else None,
-            "platform": sample["platform"],
-            "application": sample["application"],
-            "lang": sample["language"],
-            "instruction_style": sample["instruction_style"],
-            "prompt_to_evaluate": sample["prompt_to_evaluate"], 
-            "gt_type": sample["gt_type"],
-            "ui_type": sample["ui_type"], 
-            "task_filename": sample["task_filename"], 
-            "pred": point_in_pixel, 
-            "raw_response": response["raw_response"]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        # Create future tasks
+        future_to_task = {
+            executor.submit(process_single_task, model, sample, args): sample
+            for sample in tasks_to_run
         }
-        
-        if sample["gt_type"] == "positive":
-            correctness = eval_sample_positive_gt(sample, response)
-            sample_result.update({
-                "bbox": sample["bbox"], 
-            })
-        elif sample["gt_type"] == "negative":
-            correctness = eval_sample_negative_gt(sample, response)
-        else:
-            raise ValueError("Wrong instruction type")
 
-        
-        sample_result.update({
-            "correctness": correctness,
-        })
-        results.append(sample_result)
-        
+        # Process completed tasks with progress bar
+        with tqdm(total=len(tasks_to_run)) as pbar:
+            for future in concurrent.futures.as_completed(future_to_task):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    sample = future_to_task[future]
+                    logging.error(f"Task failed for sample {sample['img_filename']}: {str(e)}")
+                pbar.update(1)
+
     result_report = evaluate(results)
     # Save to file
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)

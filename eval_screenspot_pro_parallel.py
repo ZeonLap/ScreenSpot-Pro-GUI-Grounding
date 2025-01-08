@@ -50,6 +50,78 @@ def cleanup_distributed():
     except Exception as e:
         logging.error(f"Error during distributed cleanup: {str(e)}")
 
+def collect_results_to_eval(results, platform=None, group=None, application=None, language=None, gt_type=None, instruction_style=None, ui_type=None):
+    """
+    Filters the results based on provided values. None means include all (ignore filtering this attribute).
+
+    Parameters:
+        results (list): A list of dictionaries containing sample results.
+    
+    Returns:
+        list: A filtered list of dictionaries based on the given criteria.
+    """
+    filtered_results = []
+
+    for sample in results:
+        # Check each filter condition; if None, consider it as passed
+        if (platform is None or sample.get("platform") == platform) and \
+           (group is None or sample.get("group") == group) and \
+           (application is None or sample.get("application") == application) and \
+           (language is None or sample.get("language") == language) and \
+           (gt_type is None or sample.get("gt_type") == gt_type) and \
+           (instruction_style is None or sample.get("instruction_style") == instruction_style) and \
+           (ui_type is None or sample.get("ui_type") == ui_type):
+            filtered_results.append(sample)
+
+    return filtered_results
+
+def make_combinations(results, platform=False, group=None, application=False, language=False, gt_type=False, instruction_style=False, ui_type=False):
+    """
+    Returns a list of combinations of values for attributes where the corresponding parameter is set to True.
+    """
+    # Initialize a dictionary to store unique values for each attribute
+    unique_values = {
+        "platform": set(),
+        "group": set(),
+        "application": set(),
+        "language": set(),
+        "gt_type": set(),
+        "instruction_style": set(),
+        "ui_type": set(),
+    }
+
+    # Collect unique values from the results
+    for sample in results:
+        if platform:
+            unique_values["platform"].add(sample.get("platform"))
+        if group:
+            unique_values["group"].add(sample.get("group"))
+        if application:
+            unique_values["application"].add(sample.get("application"))
+        if language:
+            unique_values["language"].add(sample.get("language"))
+        if gt_type:
+            unique_values["gt_type"].add(sample.get("gt_type"))
+        if instruction_style:
+            unique_values["instruction_style"].add(sample.get("instruction_style"))
+        if ui_type:
+            unique_values["ui_type"].add(sample.get("ui_type"))
+
+    # Filter out the attributes that are set to False (no need for combinations)
+    filtered_values = {key: list(value) for key, value in unique_values.items() if value}
+    if not filtered_values:
+        return []
+
+    # Generate all combinations of the selected attributes using itertools.product
+    attribute_combinations = list(itertools.product(*filtered_values.values()))
+
+    # Convert combinations into dictionaries with corresponding attribute names
+    combinations = []
+    for combination in attribute_combinations:
+        combinations.append(dict(zip(filtered_values.keys(), combination)))
+
+    return combinations
+
 def eval_sample_positive_gt(sample, response):
     bbox = sample["bbox"]
     bbox = [bbox[0], bbox[1], bbox[2], bbox[3]]  # x1, y1, x2, y2
@@ -113,6 +185,30 @@ def evaluate_fine_grained(results):
         evaluation_result[key] = metrics
 
     return evaluation_result
+
+def calc_metric_for_result_list(results):
+    """Calculates the metrics for a simple result list."""
+    num_total = len(results)
+    correct_num = sum(1 for res in results if res["correctness"] == "correct")
+    wrong_format_num = sum(1 for res in results if res["correctness"] == "wrong_format")
+
+    # Calculate text and icon specific metrics using collect_results_to_eval
+    text_results = collect_results_to_eval(results, ui_type="text")
+    icon_results = collect_results_to_eval(results, ui_type="icon")
+
+    text_correct = sum(1 for res in text_results if res["correctness"] == "correct")
+    text_total = len(text_results)
+    icon_correct = sum(1 for res in icon_results if res["correctness"] == "correct")
+    icon_total = len(icon_results)
+    metrics = {
+        "num_correct_action": correct_num,
+        "num_total": num_total,
+        "wrong_format_num": wrong_format_num,
+        "action_acc": correct_num / num_total if num_total > 0 else 0,
+        "text_acc": text_correct / text_total if text_total > 0 else 0,
+        "icon_acc": icon_correct / icon_total if icon_total > 0 else 0
+    }
+    return metrics
 
 def evaluate_seeclick_paper_style(results):
     # Generate all combinations of platform, instruction_style, and gt_type

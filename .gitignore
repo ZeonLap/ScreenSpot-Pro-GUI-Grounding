@@ -1,0 +1,5 @@
+logs/
+results/
+visualizations/
+
+.DS_Store

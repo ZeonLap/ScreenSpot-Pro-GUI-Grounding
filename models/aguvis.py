@@ -1,10 +1,12 @@
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
-from transformers.generation import GenerationConfig
 import re
 import os
-from PIL import Image
 import tempfile
+
+from PIL import Image
+
 from qwen_vl_utils import process_vision_info
+from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
+from transformers.generation import GenerationConfig
 
 
 def parse_pyautogui(pred):
@@ -27,7 +29,7 @@ def image_to_temp_filename(image):
 
 
 class AguvisModel():
-
+    chat_template = "{% set image_count = namespace(value=0) %}{% set video_count = namespace(value=0) %}{% for message in messages %}{% if loop.first and message['role'] != 'system' %}<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n{% endif %}<|im_start|>{{ message['role'] }}\n{% if message['content'] is string %}{{ message['content'] }}<|im_end|>\n{% else %}{% for content in message['content'] %}{% if content['type'] == 'image' or 'image' in content or 'image_url' in content %}{% set image_count.value = image_count.value + 1 %}{% if add_vision_id %}Picture {{ image_count.value }}: {% endif %}<|vision_start|><|image_pad|><|vision_end|>{% elif content['type'] == 'video' or 'video' in content %}{% set video_count.value = video_count.value + 1 %}{% if add_vision_id %}Video {{ video_count.value }}: {% endif %}<|vision_start|><|video_pad|><|vision_end|>{% elif 'text' in content %}{{ content['text'] }}{% endif %}{% endfor %}<|im_end|>\n{% endif %}{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
     def __init__(self, device="cuda"):
         self.device = device
         self.grounding_system_message = "You are a GUI agent. You are given a task and a screenshot of the screen. You need to perform a series of pyautogui actions to complete the task."
@@ -69,8 +71,9 @@ class AguvisModel():
         ]
         # Preparation for inference
         text_input = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True, chat_template=self.chat_template
         )
+        text_input += "<|im_start|>assistant<|recipient|>all\n"
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = self.processor(
             text=[text_input],
@@ -81,7 +84,7 @@ class AguvisModel():
         )
         inputs = inputs.to(self.device)
 
-        cont = self.model.generate(**inputs, temperature=0.0, max_new_tokens=1024)
+        cont = self.model.generate(**inputs, do_sample=False, max_new_tokens=1024)
 
         cont_toks = cont.tolist()[0][len(inputs.input_ids[0]) :]
         text_outputs = self.tokenizer.decode(cont_toks, skip_special_tokens=True).strip()
